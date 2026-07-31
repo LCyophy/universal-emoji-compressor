@@ -19,7 +19,7 @@ from typing import Any
 
 import cv2
 import numpy as np
-from PIL import Image, ImageSequence
+from PIL import Image, ImageSequence, UnidentifiedImageError
 from tqdm import tqdm
 
 LOGGER = logging.getLogger("emoji-pipeline")
@@ -103,6 +103,13 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _frame_value(value: Any, index: int, default: int) -> int:
+    """读取 Pillow 可能以标量或逐帧列表返回的 GIF 元数据。"""
+    if isinstance(value, (list, tuple)):
+        value = value[min(index, len(value) - 1)] if value else default
+    return int(default if value is None else value)
+
+
 def inspect_media(path: Path) -> MediaInfo:
     with Image.open(path) as image:
         frame_count = int(getattr(image, "n_frames", 1))
@@ -110,8 +117,8 @@ def inspect_media(path: Path) -> MediaInfo:
         disposals: list[int] = []
         for index in range(frame_count):
             image.seek(index)
-            durations.append(int(image.info.get("duration", 100)))
-            disposals.append(int(getattr(image, "disposal_method", 2)))
+            durations.append(_frame_value(image.info.get("duration", 100), index, 100))
+            disposals.append(_frame_value(getattr(image, "disposal_method", 2), index, 2))
         return MediaInfo(
             format=(image.format or path.suffix.lstrip(".")).upper(),
             width=image.width,
@@ -596,7 +603,7 @@ class Store:
         row = self.connection.execute("SELECT id,status FROM assets WHERE sha256=?", (sha256,)).fetchone()
         if row:
             asset_id = int(row["id"])
-            complete = row["status"] == "ok"
+            complete = row["status"] in {"ok", "ignored"}
         else:
             asset_id = int(self.connection.execute("INSERT INTO assets(sha256) VALUES(?)", (sha256,)).lastrowid)
             complete = False
@@ -654,6 +661,13 @@ class Store:
         self.connection.execute(
             "INSERT INTO asset_search(asset_id,ocr_text,description,tags) VALUES(?,?,?,?)",
             (item.asset_id, ocr_text, understanding.get("description", ""), " ".join(tags)),
+        )
+        self.connection.commit()
+
+    def ignore(self, asset_id: int, error: str) -> None:
+        self.connection.execute(
+            "UPDATE assets SET status='ignored',error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (error[:4000], asset_id),
         )
         self.connection.commit()
 
@@ -798,6 +812,9 @@ def main() -> None:
             info = inspect_media(path)
             indices, frames = load_keyframes(path, args.sample_frames)
             pending.append(WorkItem(path, relative, digest, asset_id, info, indices, frames))
+        except UnidentifiedImageError as exc:
+            duplicates += 1
+            store.ignore(asset_id, f"{type(exc).__name__}: {exc}")
         except Exception as exc:
             errors += 1
             store.fail(asset_id, f"{type(exc).__name__}: {exc}")

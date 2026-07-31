@@ -26,10 +26,12 @@ def quantize_rgba(frame: Image.Image, colors: int) -> Image.Image:
     palette.extend([0] * (768 - len(palette)))
     palette[255 * 3 : 255 * 3 + 3] = [0, 0, 0]
     indices = np.asarray(quantized, dtype=np.uint8).copy()
-    indices[alpha < 128] = 255
+    transparent = alpha < 128
+    indices[transparent] = 255
     output = Image.fromarray(indices, mode="P")
     output.putpalette(palette)
-    output.info["transparency"] = 255
+    if bool(transparent.any()):
+        output.info["transparency"] = 255
     return output
 
 
@@ -53,6 +55,17 @@ def encode_media(
             else set()
         )
         good_indices, durations = recovery._redistributed_durations(info, skipped)
+        timed_frames = [
+            (index, duration)
+            for index, duration in zip(good_indices, durations, strict=True)
+            if duration > 0
+        ]
+        if timed_frames:
+            good_indices = [index for index, _ in timed_frames]
+            durations = [duration for _, duration in timed_frames]
+        else:
+            good_indices = good_indices[:1]
+            durations = [0]
         frames: list[Image.Image] = []
         disposals: list[int] = []
         previous = ImageFile.LOAD_TRUNCATED_IMAGES
@@ -72,15 +85,23 @@ def encode_media(
 
         output = output_base.with_suffix(".gif")
         output.parent.mkdir(parents=True, exist_ok=True)
+        collapsed_to_single = len(frames) > 1 and all(
+            frame.copy().convert("RGBA").tobytes()
+            == frames[0].copy().convert("RGBA").tobytes()
+            for frame in frames[1:]
+        )
+        single_frame_output = len(frames) == 1 or collapsed_to_single
+        append_images = [] if single_frame_output else frames[1:]
+        save_duration = sum(durations) if single_frame_output else durations
+        save_disposal = disposals[0] if single_frame_output else disposals
         frames[0].save(
             output,
             "GIF",
             save_all=True,
-            append_images=frames[1:],
-            duration=durations,
+            append_images=append_images,
+            duration=save_duration,
             loop=info.loop,
-            disposal=disposals,
-            transparency=255,
+            disposal=save_disposal,
             optimize=False,
         )
         encoded = recovery.BASE_INSPECT_MEDIA(output)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -38,23 +39,63 @@ def representative_image(path: Path, tile_size: int = 256) -> Image.Image:
     return sheet
 
 
+def _decode_json_string(value: str) -> str:
+    try:
+        return str(json.loads(f'"{value}"'))
+    except json.JSONDecodeError:
+        return value.replace('\\"', '"').replace('\\n', ' ').strip()
+
+
+def _extract_string(text: str, key: str) -> str:
+    match = re.search(
+        rf'"{re.escape(key)}"\s*:\s*"((?:\\.|[^"\\])*)"',
+        text,
+        re.DOTALL,
+    )
+    return _decode_json_string(match.group(1)).strip() if match else ""
+
+
+def _extract_array(text: str, *keys: str) -> list[str]:
+    boundary = r'(?=\n\s*"(?:description|emotion|objects|tags|标签|safety)"\s*:|\Z)'
+    for key in keys:
+        match = re.search(
+            rf'"{re.escape(key)}"\s*\]?\s*[:=]\s*\[(.*?)(?:\]|{boundary})',
+            text,
+            re.DOTALL,
+        )
+        if not match:
+            continue
+        values = [
+            _decode_json_string(value).strip()
+            for value in re.findall(r'"((?:\\.|[^"\\])*)"', match.group(1))
+        ]
+        return list(dict.fromkeys(value for value in values if value))[:10]
+    return []
+
+
 def parse_json(text: str) -> dict:
+    result: dict
     try:
         begin, end = text.index("{"), text.rindex("}") + 1
-        result = json.loads(text[begin:end])
+        decoded = json.loads(text[begin:end])
+        result = decoded if isinstance(decoded, dict) else {}
     except (ValueError, json.JSONDecodeError):
         result = {
-            "description": text.strip(),
-            "emotion": [],
-            "objects": [],
-            "tags": [],
-            "safety": "unknown",
+            "description": _extract_string(text, "description"),
+            "emotion": _extract_array(text, "emotion"),
+            "objects": _extract_array(text, "objects"),
+            "tags": _extract_array(text, "tags", "标签"),
+            "safety": _extract_string(text, "safety") or "unknown",
         }
     for key in ("emotion", "objects", "tags"):
-        if not isinstance(result.get(key), list):
-            result[key] = [str(result[key])] if result.get(key) else []
+        value = result.get(key)
+        if not isinstance(value, list):
+            value = [str(value)] if value else []
+        result[key] = list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))[:10]
     result["description"] = str(result.get("description", "")).strip()
     result["safety"] = str(result.get("safety", "unknown")).lower()
+    if not result["tags"]:
+        result["tags"] = (result["objects"] + result["emotion"] + ["表情包"])[:10]
     return result
 
 
