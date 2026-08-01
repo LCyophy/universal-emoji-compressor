@@ -24,6 +24,7 @@ from tqdm import tqdm
 
 LOGGER = logging.getLogger("emoji-pipeline")
 SIZES = (64, 96, 128, 160)
+COMPLEXITY_THRESHOLDS = (0.236, 0.373, 0.456)
 SUFFIXES = {".jpg", ".jpeg", ".jfif", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".avif"}
 _DLL_HANDLES: list[Any] = []
 
@@ -345,11 +346,11 @@ def choose_size(
     min_text_px: float,
 ) -> tuple[int, dict[str, Any]]:
     # 阈值偏向节省空间，随后由 OCR 可读性设置硬下限。
-    if metrics.score < 0.235:
+    if metrics.score < COMPLEXITY_THRESHOLDS[0]:
         visual_size = 64
-    elif metrics.score < 0.335:
+    elif metrics.score < COMPLEXITY_THRESHOLDS[1]:
         visual_size = 96
-    elif metrics.score < 0.455:
+    elif metrics.score < COMPLEXITY_THRESHOLDS[2]:
         visual_size = 128
     else:
         visual_size = 160
@@ -506,7 +507,7 @@ class QwenVisionBatch:
         )
         self.processor = AutoProcessor.from_pretrained(
             model_name,
-            min_pixels=128 * 28 * 28,
+            min_pixels=128 * 32 * 32,
             max_pixels=max_pixels,
         )
 
@@ -779,7 +780,7 @@ def main() -> None:
     parser.add_argument("--gif-colors", type=int, default=96)
     parser.add_argument("--no-ocr", action="store_true")
     parser.add_argument("--no-vision", action="store_true")
-    parser.add_argument("--vision-model", default="Qwen/Qwen2.5-VL-3B-Instruct")
+    parser.add_argument("--vision-model", default="Qwen/Qwen3-VL-4B-Instruct")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
@@ -821,7 +822,7 @@ def main() -> None:
 
     LOGGER.info("发现 %d，待处理 %d，已完成/重复 %d", len(paths), len(pending), duplicates)
     ocr = None if args.no_ocr else PaddleOCRBatch(args.device)
-    vision = None if args.no_vision else QwenVisionBatch(args.vision_model, 640 * 28 * 28)
+    vision = None if args.no_vision else QwenVisionBatch(args.vision_model, 640 * 32 * 32)
 
     processed = 0
     with ThreadPoolExecutor(max_workers=args.encode_workers) as executor:

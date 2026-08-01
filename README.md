@@ -7,12 +7,13 @@
 - 递归批处理 JPG、PNG、WebP、GIF、BMP、TIFF、AVIF 等常见格式。
 - 使用 SHA-256 去重、数据库自增 ID 和数字文件名；一个内容可关联多个原始路径。
 - 输出长边只使用 64、96、128、160 四档，不放大小图。
-- 先按熵、边缘、颜色、主体占比和细节评估复杂度，再由 OCR 文字大小设置尺寸下限。
-- 缩放后重新 OCR；文字保留率不足 80% 时自动升档，优先节省空间但保证文字可读。
+- 原图 OCR 负责生成高精度文字索引；最终编码后的 160px 图作为“物理可保留文字”基准。
+- 从 64px 开始对最终编码效果重新 OCR，文字保留率不足 80% 时逐档升到 96/128/160；160px 没有可靠文字时仅按复杂度选档。
+- 无 OCR 或 160px 无文字时使用统一复杂度阈值 0.236 / 0.373 / 0.456，分别映射到 64 / 96 / 128 / 160。
 - GIF 抽帧参与复杂度与 OCR，保留 loop 和动画总时长。
 - 严格定位坏帧，容错时跳过坏帧并把时长转移到相邻有效帧；全部帧损坏才报错。
 - 单帧伪 GIF 自动转成 WebP；普通静态图统一输出 WebP。
-- 可用 Qwen2.5-VL 等轻量本地视觉语言模型生成描述、情绪、物体和搜索标签。
+- 默认使用 Qwen3-VL-4B-Instruct 生成描述、情绪、物体和搜索标签；视觉阶段优先分析原图，缺失时回退到压缩图。
 - SQLite FTS5 与 JSONL 双索引，保留完整 `original_paths` 来源追溯。
 - 支持断点续跑，已完成内容不会重复处理。
 
@@ -50,23 +51,25 @@ pip install -e ".[vision]"
 
 首次使用 Hugging Face 模型名时会联网下载；也可传入已下载的本地模型目录。
 
+Qwen3-VL 需要 transformers>=4.57 和 qwen-vl-utils>=0.0.14。中国大陆网络可先通过 ModelScope 下载官方 Qwen/Qwen3-VL-4B-Instruct，再传入本地快照目录。
+
 ## 快速开始
 
 ### 完整流程
 
 ```bash
 emoji-pipeline INPUT OUTPUT \
-  --model Qwen/Qwen2.5-VL-3B-Instruct \
+  --model Qwen/Qwen3-VL-4B-Instruct \
   --device gpu:0
 ```
 
-流程依次执行：压缩与 OCR、视觉索引、JSONL 导出。
+流程依次执行：压缩与 OCR、视觉索引、JSONL 导出。完整流程会自动把 INPUT 传给视觉阶段，优先使用原始素材。视觉模型需要主题提示时，可单独运行 emoji-index 并增加 --context。
 
 ### 先压缩，稍后补索引
 
 ```bash
 emoji-compress INPUT OUTPUT --device gpu:0 --ocr-batch-size 8
-emoji-index OUTPUT Qwen/Qwen2.5-VL-3B-Instruct --batch-size 2
+emoji-index OUTPUT Qwen/Qwen3-VL-4B-Instruct --source-root INPUT --batch-size 2
 emoji-export OUTPUT
 ```
 
@@ -137,7 +140,7 @@ GIF 使用独立局部调色板并关闭 Pillow `optimize`，避免局部调色�
 实际吞吐取决于 GIF 帧数、分辨率、OCR 命中率、磁盘和模型。在 RTX 5080 16GB 的混合验证集上：
 
 - 压缩、复杂度分析与 OCR：约 2 张/秒；
-- Qwen2.5-VL-3B 视觉索引：约 0.55～0.66 张/秒；
+- Qwen3-VL-4B 视觉索引：RTX 5080 单张小样约 0.20～0.23 张/秒；批处理吞吐以实际数据为准；
 - 完整流程的主要瓶颈是视觉理解模型。
 
 这些数字仅用于容量规划，不是性能承诺。

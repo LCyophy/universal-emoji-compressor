@@ -103,9 +103,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("output_root", type=Path)
     parser.add_argument("model", help="本地模型目录或 Hugging Face 模型名")
+    parser.add_argument("--source-root", type=Path, help="优先用原图做视觉理解")
+    parser.add_argument("--context", default="", help="可选的数据集主题背景，不作为识别结果直接复制")
     parser.add_argument("--device", default="auto", help="auto、cuda:0 或 cpu")
     parser.add_argument("--batch-size", type=int, default=2)
-    parser.add_argument("--max-pixels", type=int, default=320 * 28 * 28)
+    parser.add_argument("--max-pixels", type=int, default=320 * 32 * 32)
+    parser.add_argument("--asset-id", type=int, action="append", help="只处理指定资产 ID，可重复")
+    parser.add_argument("--limit", type=int, help="最多处理多少条，用于小样验证")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
@@ -120,9 +124,16 @@ def main() -> None:
         condition += " AND (understanding_json IS NULL OR understanding_json='' OR understanding_json='{}')"
     assets = list(
         connection.execute(
-            f"SELECT id,output_path,ocr_text FROM assets WHERE {condition} ORDER BY id"
+            f"""SELECT a.id,a.output_path,a.ocr_text,
+             (SELECT s.original_path FROM sources s WHERE s.asset_id=a.id ORDER BY s.id LIMIT 1)
+             AS original_path FROM assets a WHERE {condition} ORDER BY a.id"""
         )
     )
+    if args.asset_id:
+        selected_ids = set(args.asset_id)
+        assets = [row for row in assets if row["id"] in selected_ids]
+    if args.limit is not None:
+        assets = assets[: max(0, args.limit)]
 
     load_started = time.perf_counter()
     device = "cuda:0" if args.device == "auto" and torch.cuda.is_available() else args.device
@@ -138,7 +149,7 @@ def main() -> None:
         model.to(device)
     processor = AutoProcessor.from_pretrained(
         args.model,
-        min_pixels=96 * 28 * 28,
+        min_pixels=96 * 32 * 32,
         max_pixels=args.max_pixels,
         use_fast=True,
     )
@@ -151,17 +162,28 @@ def main() -> None:
         "description（一句具体的简体中文描述）；"
         "emotion（情绪数组）；objects（人物、动物或物体数组）；"
         "tags（5到10个适合搜索的简体中文标签）；"
-        "safety（只能是 normal、adult 或 violence）。已识别文字："
+        "safety 字段必须存在，且只能是 normal、adult 或 violence。"
+        + (f"数据集背景（只能辅助判断，仍以画面为准）：{args.context}。" if args.context else "")
+        + "已识别文字："
     )
 
     inference_seconds = 0.0
     results: list[dict] = []
     for start in tqdm(range(0, len(assets), args.batch_size), unit="批", desc="Qwen-VL"):
         batch = assets[start : start + args.batch_size]
-        images = [
-            representative_image(args.output_root / Path(row["output_path"]))
-            for row in batch
-        ]
+        image_paths = []
+        for row in batch:
+            source_path = (
+                args.source_root / Path(row["original_path"])
+                if args.source_root and row["original_path"]
+                else None
+            )
+            image_paths.append(
+                source_path
+                if source_path is not None and source_path.is_file()
+                else args.output_root / Path(row["output_path"])
+            )
+        images = [representative_image(path) for path in image_paths]
         conversations = [
             [
                 {

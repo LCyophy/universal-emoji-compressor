@@ -36,3 +36,15 @@ def test_bad_frame_durations_are_redistributed():
     assert indices == [1, 4]
     assert durations == [360, 40]
     assert sum(durations) == info.duration_ms
+
+
+def test_complexity_threshold_boundaries_are_universal():
+    def metrics(score: float) -> VisualMetrics:
+        return VisualMetrics(0, 0, 0, 0, 0, 0, 0, score)
+
+    assert choose_size(metrics(0.2359), [], (400, 400), 10)[0] == 64
+    assert choose_size(metrics(0.2360), [], (400, 400), 10)[0] == 96
+    assert choose_size(metrics(0.3729), [], (400, 400), 10)[0] == 96
+    assert choose_size(metrics(0.3730), [], (400, 400), 10)[0] == 128
+    assert choose_size(metrics(0.4559), [], (400, 400), 10)[0] == 128
+    assert choose_size(metrics(0.4560), [], (400, 400), 10)[0] == 160

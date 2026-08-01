@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "universal-emoji-compressor"
-version = "0.1.0"
+version = "0.2.0"
 description = "通用表情包压缩、OCR、视觉理解与可搜索索引工具"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -28,16 +28,16 @@ dependencies = [
 ocr = ["paddleocr>=3.0"]
 vision = [
   "torch>=2.7",
-  "transformers>=4.51",
+  "transformers>=4.57",
   "accelerate>=1.6",
-  "qwen-vl-utils>=0.0.11",
+  "qwen-vl-utils>=0.0.14",
 ]
 all = [
   "paddleocr>=3.0",
   "torch>=2.7",
-  "transformers>=4.51",
+  "transformers>=4.57",
   "accelerate>=1.6",
-  "qwen-vl-utils>=0.0.11",
+  "qwen-vl-utils>=0.0.14",
 ]
 dev = ["pytest>=8.3", "ruff>=0.9"]
 
