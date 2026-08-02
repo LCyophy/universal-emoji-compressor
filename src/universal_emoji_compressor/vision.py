@@ -14,27 +14,69 @@ from tqdm import tqdm
 
 
 def representative_image(path: Path, tile_size: int = 256) -> Image.Image:
+    """Build a visual contact sheet while tolerating damaged animation frames.
+
+    A GIF may be previewable even when one or more compressed frames raise
+    ``broken data stream``. Decode sampled frames independently and omit only
+    the bad samples; scan all frames as a fallback when the selected samples
+    are all damaged. The compression stage remains responsible for preserving
+    the original animation duration and recording skipped-frame metadata.
+    """
     with Image.open(path) as image:
         count = int(getattr(image, "n_frames", 1))
         if count <= 1:
-            return image.convert("RGB").copy()
+            try:
+                image.seek(0)
+                image.load()
+                return image.convert("RGB").copy()
+            except (OSError, ValueError):
+                raise OSError(f"no decodable frame in {path}")
+
         sample_count = min(4, count)
         indices = sorted(
-            {round(index * (count - 1) / (sample_count - 1)) for index in range(sample_count)}
+            {
+                round(index * (count - 1) / (sample_count - 1))
+                for index in range(sample_count)
+            }
         )
-        tiles = []
+        tiles: list[tuple[int, Image.Image]] = []
         for index in indices:
-            image.seek(index)
-            frame = image.convert("RGB")
+            try:
+                image.seek(index)
+                image.load()
+                frame = image.convert("RGB")
+            except (OSError, ValueError):
+                continue
             frame.thumbnail((tile_size, tile_size), Image.Resampling.LANCZOS)
             tile = Image.new("RGB", (tile_size, tile_size), "white")
             tile.paste(frame, ((tile_size - frame.width) // 2, (tile_size - frame.height) // 2))
             ImageDraw.Draw(tile).text((5, 5), f"#{index}", fill="red")
-            tiles.append(tile)
+            tiles.append((index, tile))
+
+        if not tiles:
+            for index in range(count):
+                if index in indices:
+                    continue
+                try:
+                    image.seek(index)
+                    image.load()
+                    frame = image.convert("RGB")
+                except (OSError, ValueError):
+                    continue
+                frame.thumbnail((tile_size, tile_size), Image.Resampling.LANCZOS)
+                tile = Image.new("RGB", (tile_size, tile_size), "white")
+                tile.paste(frame, ((tile_size - frame.width) // 2, (tile_size - frame.height) // 2))
+                ImageDraw.Draw(tile).text((5, 5), f"#{index}", fill="red")
+                tiles.append((index, tile))
+                if len(tiles) >= sample_count:
+                    break
+
+    if not tiles:
+        raise OSError(f"no decodable frame in {path}")
     columns = 2
     rows = (len(tiles) + 1) // 2
     sheet = Image.new("RGB", (tile_size * columns, tile_size * rows), "white")
-    for index, tile in enumerate(tiles):
+    for index, (_, tile) in enumerate(tiles):
         sheet.paste(tile, ((index % columns) * tile_size, (index // columns) * tile_size))
     return sheet
 
